@@ -83,7 +83,7 @@ function detectVulnerabilities(code: string): Vulnerability[] {
         title: "Potential Integer Overflow/Underflow",
         severity: "medium",
         description:
-          "Arithmetic operations detected without overflow protection. Solidity 0.8+ has built-in checks, but older versions require SafeMath.",
+          "Arithmetic operations detected. Solidity 0.8+ includes built-in overflow checks; this issue is informational unless using older compiler versions.",
         codeContext: {
           lineStart: lineNum,
           lineEnd: lineNum,
