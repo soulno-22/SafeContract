@@ -203,9 +203,10 @@ export function VulnerabilityList({
 
 /**
  * RecommendationList - Focused view on fixes and recommendations
- * Use when: User asks "how to fix", "what should I do", or wants actionable steps
+ * Use when: User asks "how to fix", "what should I do", "recommendations", "mitigations", or wants actionable steps
  */
 export function RecommendationList({ auditResult }: TamboComponentProps) {
+  // Filter for high and critical severity issues
   const criticalVulns = auditResult.vulnerabilities.filter(
     (v) => v.severity === "critical" || v.severity === "high"
   );
@@ -310,7 +311,7 @@ export const tamboComponentRegistry = {
   RiskOverviewCard: {
     name: "RiskOverviewCard",
     description:
-      "Shows overall risk score, counts of vulnerabilities, and quick highlights. Use when user asks about overall risk, security posture, or summary.",
+      "Shows overall risk score, counts of vulnerabilities, and quick highlights. Use this when the user asks about overall risk, score, or a high-level summary of the contract's security.",
     props: {
       auditResult: {
         type: "object",
@@ -321,7 +322,7 @@ export const tamboComponentRegistry = {
   VulnerabilityList: {
     name: "VulnerabilityList",
     description:
-      "Shows detailed list of all vulnerabilities with descriptions and fixes. Use when user asks about specific vulnerabilities or wants to see all issues.",
+      "Shows detailed list of all vulnerabilities with descriptions and fixes. Use when the user asks 'what are the issues', 'show vulnerabilities', or similar.",
     props: {
       auditResult: {
         type: "object",
@@ -332,7 +333,7 @@ export const tamboComponentRegistry = {
   RecommendationList: {
     name: "RecommendationList",
     description:
-      "Focused view on fixes and recommendations. Use when user asks 'how to fix' or wants actionable steps.",
+      "Focused view on fixes and recommendations. Use when the user asks 'how to fix', 'what should I do', 'recommendations', or 'mitigations'.",
     props: {
       auditResult: {
         type: "object",
@@ -343,7 +344,7 @@ export const tamboComponentRegistry = {
   CodeContextViewer: {
     name: "CodeContextViewer",
     description:
-      "Shows code snippets with context. Use when user asks about specific code or wants to see where issues are.",
+      "Shows code snippets with context. Use when the user asks 'where in code', 'show me code', or mentions line numbers or functions.",
     props: {
       auditResult: {
         type: "object",

@@ -21,7 +21,7 @@ export async function analyzeContract(
     throw new Error("Address lookup not yet implemented");
   }
 
-  // Mock analysis - detect common patterns
+  // Flow-aware analysis - detect common patterns
   const vulnerabilities = detectVulnerabilities(code);
   const metrics = calculateMetrics(code, vulnerabilities);
   const riskScore = calculateRiskScore(vulnerabilities);
@@ -39,32 +39,193 @@ export async function analyzeContract(
 }
 
 /**
- * Heuristic-based vulnerability detection
+ * Simple function model for flow-aware analysis
+ */
+interface FunctionModel {
+  name: string;
+  visibility: "public" | "external" | "internal" | "private";
+  payable: boolean;
+  body: string;
+  lineStart: number;
+  lineEnd: number;
+}
+
+/**
+ * Parse contract into functions (heuristic-based)
+ */
+function parseFunctions(code: string): FunctionModel[] {
+  const functions: FunctionModel[] = [];
+  const lines = code.split("\n");
+
+  let currentFunction: Partial<FunctionModel> | null = null;
+  let braceDepth = 0;
+  let inFunction = false;
+  let functionStartLine = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+
+    // Detect function declaration
+    const functionMatch = trimmed.match(
+      /function\s+(\w+)\s*\([^)]*\)\s*(public|external|internal|private)?\s*(payable)?/
+    );
+
+    if (functionMatch && !inFunction) {
+      currentFunction = {
+        name: functionMatch[1],
+        visibility: (functionMatch[2] as any) || "public",
+        payable: !!functionMatch[3],
+        body: "",
+        lineStart: i + 1,
+      };
+      inFunction = true;
+      functionStartLine = i + 1;
+      braceDepth = 0;
+    }
+
+    if (inFunction && currentFunction) {
+      // Count braces to find function end
+      for (const char of line) {
+        if (char === "{") braceDepth++;
+        if (char === "}") braceDepth--;
+      }
+
+      currentFunction.body += line + "\n";
+
+      // Function ended
+      if (braceDepth === 0 && trimmed.includes("}")) {
+        currentFunction.lineEnd = i + 1;
+        functions.push(currentFunction as FunctionModel);
+        currentFunction = null;
+        inFunction = false;
+      }
+    }
+  }
+
+  return functions;
+}
+
+/**
+ * Flow-aware vulnerability detection
  */
 function detectVulnerabilities(code: string): Vulnerability[] {
   const vulnerabilities: Vulnerability[] = [];
   const lines = code.split("\n");
+  const functions = parseFunctions(code);
 
-  // Check for reentrancy patterns
-  const reentrancyPattern = /\.call\(|\.send\(|\.transfer\(/g;
-  let reentrancyMatch;
-  let lineNum = 1;
-  for (const line of lines) {
-    if (reentrancyPattern.test(line) && !line.includes("nonReentrant")) {
+  // Check for reentrancy: external call before state update
+  for (const func of functions) {
+    const funcLines = func.body.split("\n");
+    let externalCallLine: number | null = null;
+    let stateUpdateLine: number | null = null;
+    let hasReentrancyGuard = false;
+
+    // Check for ReentrancyGuard pattern
+    if (
+      func.body.includes("nonReentrant") ||
+      code.includes("ReentrancyGuard")
+    ) {
+      hasReentrancyGuard = true;
+    }
+
+    for (let i = 0; i < funcLines.length; i++) {
+      const line = funcLines[i];
+      const trimmed = line.trim();
+
+      // Detect external calls
+      if (
+        /\.call\(|\.call\{|\.send\(|\.transfer\(|\.delegatecall\(/.test(trimmed)
+      ) {
+        if (externalCallLine === null) {
+          externalCallLine = func.lineStart + i;
+        }
+      }
+
+      // Detect state updates (simplified patterns)
+      if (
+        /=\s*[^=]|mapping\[.*\]\s*\[.*\]\s*=|^\s*\+\+|^\s*--/.test(trimmed) &&
+        !trimmed.includes("memory") &&
+        !trimmed.includes("calldata")
+      ) {
+        if (stateUpdateLine === null) {
+          stateUpdateLine = func.lineStart + i;
+        }
+      }
+    }
+
+    // If external call appears before state update, flag reentrancy
+    if (
+      externalCallLine !== null &&
+      stateUpdateLine !== null &&
+      externalCallLine < stateUpdateLine
+    ) {
+      const severity: VulnerabilitySeverity = hasReentrancyGuard
+        ? "medium"
+        : "high";
       vulnerabilities.push({
-        id: `reentrancy-${vulnerabilities.length + 1}`,
-        title: "Potential Reentrancy Vulnerability",
-        severity: "high",
+        id: `reentrancy-flow-${vulnerabilities.length + 1}`,
+        title: "Potential Reentrancy: External Call Before State Update",
+        severity,
         description:
-          "External calls (call, send, transfer) detected without reentrancy protection. Attackers could recursively call functions to drain funds.",
+          "This function makes external calls before updating state variables. This pattern can allow reentrancy attacks where an attacker recursively calls the function to drain funds before state is updated.",
         codeContext: {
-          lineStart: lineNum,
-          lineEnd: lineNum,
-          snippet: line.trim(),
+          lineStart: externalCallLine,
+          lineEnd: stateUpdateLine,
+          snippet: funcLines
+            .slice(
+              externalCallLine - func.lineStart,
+              stateUpdateLine - func.lineStart + 1
+            )
+            .join("\n")
+            .trim(),
         },
         suggestedFix:
-          "Use the ReentrancyGuard pattern from OpenZeppelin or implement checks-effects-interactions pattern.",
+          "Follow the checks-effects-interactions pattern: validate inputs, update state, then make external calls. Alternatively, use OpenZeppelin's ReentrancyGuard modifier.",
       });
+    }
+  }
+
+  // Check for unchecked external calls (improved detection)
+  let lineNum = 1;
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    // Match external calls: .call{, .call.value, .send(, .transfer(
+    const callMatch = trimmed.match(
+      /(\.call\{|\.call\(|\.send\(|\.transfer\()/
+    );
+
+    if (callMatch) {
+      // Check if return value is used
+      const hasReturnCheck =
+        trimmed.includes("require") ||
+        trimmed.includes("if") ||
+        trimmed.includes("bool success") ||
+        trimmed.includes("(bool,");
+
+      // Check if result is assigned and checked later (basic heuristic)
+      const nextLines = lines.slice(lineNum, Math.min(lineNum + 5, lines.length));
+      const hasLaterCheck = nextLines.some((nextLine) =>
+        /require\s*\(.*success|if\s*\(.*success/.test(nextLine)
+      );
+
+      if (!hasReturnCheck && !hasLaterCheck) {
+        vulnerabilities.push({
+          id: `external-call-${vulnerabilities.length + 1}`,
+          title: "Unchecked External Call",
+          severity: "high",
+          description:
+            "External call detected without checking return value. Failed calls could be silently ignored, leading to unexpected behavior or loss of funds.",
+          codeContext: {
+            lineStart: lineNum,
+            lineEnd: lineNum,
+            snippet: trimmed,
+          },
+          suggestedFix:
+            "Always check the return value of external calls. Use pattern: (bool success, ) = recipient.call{value: amount}(\"\"); require(success, \"Transfer failed\"); Or use transfer()/send() which revert on failure.",
+        });
+      }
     }
     lineNum++;
   }
@@ -115,30 +276,6 @@ function detectVulnerabilities(code: string): Vulnerability[] {
         },
         suggestedFix:
           "Add access control modifiers (e.g., onlyOwner, onlyRole) to restrict function access.",
-      });
-      break;
-    }
-    lineNum++;
-  }
-
-  // Check for unchecked external calls
-  const externalCallPattern = /\.call\([^)]*\)/g;
-  lineNum = 1;
-  for (const line of lines) {
-    if (externalCallPattern.test(line) && !line.includes("require")) {
-      vulnerabilities.push({
-        id: `external-call-${vulnerabilities.length + 1}`,
-        title: "Unchecked External Call",
-        severity: "high",
-        description:
-          "External call detected without checking return value. Failed calls could be silently ignored.",
-        codeContext: {
-          lineStart: lineNum,
-          lineEnd: lineNum,
-          snippet: line.trim(),
-        },
-        suggestedFix:
-          "Always check the return value of external calls or use transfer/send which revert on failure.",
       });
       break;
     }
@@ -256,4 +393,3 @@ function generateSummary(
 
   return `The contract analysis indicates a ${levelText[riskLevel]} security posture. Found ${vulnCount} potential vulnerability/vulnerabilities across ${metrics.linesOfCode} lines of code. ${metrics.functionCount} function(s) analyzed.`;
 }
-

@@ -15,6 +15,290 @@ interface ChatMessage {
   content: string;
 }
 
+/**
+ * Builds system message for AI assistant
+ */
+function buildSystemMessage(seedVulnerability?: Vulnerability | null): string {
+  let systemMsg = `You are SafeContract Copilot, an AI smart contract security expert.
+
+You receive:
+- The Solidity contract source code
+- A structured list of findings (each with name, severity, description, and location)
+- The current risk score and summary
+
+You must answer in clear, conversational English, directly addressing the user's question.
+Always reference concrete findings when possible.
+Use short paragraphs, avoid excessive bullet points unless the user asks.
+Keep tone educational but friendly.
+Do not just restate the finding; add explanation of why it is dangerous and how to mitigate it.
+If the user question is vague, ask a brief clarifying question instead of guessing.`;
+
+  if (seedVulnerability) {
+    systemMsg += `\n\nFocus on explaining this specific finding: "${seedVulnerability.title}" (${seedVulnerability.severity} severity).`;
+  }
+
+  return systemMsg;
+}
+
+/**
+ * Builds context message with contract and audit data
+ */
+function buildContextMessage(
+  auditResult: AuditResult,
+  originalCode: string,
+  seedVulnerability?: Vulnerability | null
+): string {
+  // Truncate code to avoid token limits (first 50 and last 50 lines)
+  const codeLines = originalCode.split("\n");
+  const codePreview =
+    codeLines.length > 100
+      ? [
+          ...codeLines.slice(0, 50),
+          "\n// ... (code truncated) ...\n",
+          ...codeLines.slice(-50),
+        ].join("\n")
+      : originalCode;
+
+  const findingsSummary = auditResult.vulnerabilities
+    .map(
+      (v) =>
+        `- ${v.title} (${v.severity}): ${v.description}. Location: Line ${v.codeContext.lineStart || "N/A"}. Fix: ${v.suggestedFix}`
+    )
+    .join("\n");
+
+  let context = `CONTRACT AUDIT RESULTS:
+
+Risk Score: ${auditResult.riskScore}/100 (${auditResult.riskLevel})
+Summary: ${auditResult.summary}
+
+FINDINGS:
+${findingsSummary}
+
+CONTRACT CODE (preview):
+\`\`\`solidity
+${codePreview}
+\`\`\``;
+
+  if (seedVulnerability) {
+    context += `\n\nFOCUS FINDING:
+Title: ${seedVulnerability.title}
+Severity: ${seedVulnerability.severity}
+Description: ${seedVulnerability.description}
+Suggested Fix: ${seedVulnerability.suggestedFix}
+Code Location: Line ${seedVulnerability.codeContext.lineStart || "N/A"}
+${seedVulnerability.codeContext.snippet ? `Code:\n${seedVulnerability.codeContext.snippet}` : ""}`;
+  }
+
+  return context;
+}
+
+/**
+ * Generate intelligent response based on user question and context
+ */
+function generateResponse(
+  userMessage: string,
+  auditResult: AuditResult,
+  originalCode: string,
+  seedVulnerability: Vulnerability | null,
+  conversationHistory: ChatMessage[]
+): string {
+  const lowerMessage = userMessage.toLowerCase();
+  const systemMsg = buildSystemMessage(seedVulnerability);
+  const contextMsg = buildContextMessage(
+    auditResult,
+    originalCode,
+    seedVulnerability
+  );
+
+  // If there's a seed vulnerability, focus on it
+  if (seedVulnerability) {
+    return `**${seedVulnerability.title}** (${seedVulnerability.severity} severity)
+
+${seedVulnerability.description}
+
+**Why this is dangerous:** ${
+      seedVulnerability.severity === "critical" || seedVulnerability.severity === "high"
+        ? "This vulnerability could lead to significant financial loss or complete contract compromise. Attackers could exploit this to drain funds, manipulate state, or gain unauthorized access."
+        : "This issue could lead to unexpected behavior, potential security weaknesses, or make the contract more vulnerable to other attacks."
+    }
+
+**How to fix it:** ${seedVulnerability.suggestedFix}
+
+${seedVulnerability.codeContext.snippet ? `**Vulnerable code (Line ${seedVulnerability.codeContext.lineStart}):**\n\`\`\`solidity\n${seedVulnerability.codeContext.snippet}\n\`\`\`` : ""}
+
+Would you like me to explain any specific part of this vulnerability or show you a complete secure implementation?`;
+  }
+
+  // Handle specific question types with contextual responses
+  if (
+    lowerMessage.includes("risk") ||
+    lowerMessage.includes("score") ||
+    lowerMessage.includes("overall") ||
+    lowerMessage.includes("summary")
+  ) {
+    const highSeverityCount =
+      auditResult.metrics.criticalCount + auditResult.metrics.highCount;
+    return `Your contract has a **${auditResult.riskLevel}** risk level with a score of **${auditResult.riskScore}/100**.
+
+The risk score is calculated by assigning points based on severity:
+- Critical issues: +30 points each
+- High issues: +20 points each  
+- Medium issues: +10 points each
+- Low issues: +5 points each
+
+Your contract has:
+- ${auditResult.metrics.criticalCount} critical issue(s)
+- ${auditResult.metrics.highCount} high-severity issue(s)
+- ${auditResult.metrics.mediumCount} medium-severity issue(s)
+- ${auditResult.metrics.lowCount} low-severity issue(s)
+
+${highSeverityCount > 0 ? `⚠️ **Warning:** You have ${highSeverityCount} high or critical severity issue(s) that should be addressed before deployment.` : "✅ Your contract has no critical or high-severity issues, but review all findings before deployment."}
+
+${auditResult.summary}`;
+  }
+
+  if (
+    lowerMessage.includes("fix") ||
+    lowerMessage.includes("how to") ||
+    lowerMessage.includes("what should i do") ||
+    lowerMessage.includes("recommendation")
+  ) {
+    const highSeverityVulns = auditResult.vulnerabilities.filter(
+      (v) => v.severity === "critical" || v.severity === "high"
+    );
+
+    if (highSeverityVulns.length === 0) {
+      return `Good news! Your contract doesn't have any critical or high-severity issues. However, I still recommend:
+
+1. Review all ${auditResult.vulnerabilities.length} finding(s) in the Vulnerabilities tab
+2. Address medium-severity issues before deployment
+3. Consider a professional security audit for production contracts
+
+Would you like me to explain any specific finding in more detail?`;
+    }
+
+    let response = `Here are the **priority fixes** for your contract's ${highSeverityVulns.length} high-severity issue(s):\n\n`;
+
+    highSeverityVulns.forEach((vuln, idx) => {
+      response += `${idx + 1}. **${vuln.title}** (${vuln.severity})\n`;
+      response += `   ${vuln.suggestedFix}\n\n`;
+    });
+
+    response += `I recommend fixing these in order of severity (critical first, then high). Each fix addresses a specific security vulnerability that could be exploited.`;
+
+    return response;
+  }
+
+  if (
+    lowerMessage.includes("vulnerability") ||
+    lowerMessage.includes("issue") ||
+    lowerMessage.includes("problem") ||
+    lowerMessage.includes("finding")
+  ) {
+    const criticalVulns = auditResult.vulnerabilities.filter(
+      (v) => v.severity === "critical" || v.severity === "high"
+    );
+
+    if (criticalVulns.length > 0) {
+      let response = `I found **${auditResult.vulnerabilities.length}** security issue(s) in your contract. Here are the most critical ones:\n\n`;
+
+      criticalVulns.forEach((vuln, idx) => {
+        response += `${idx + 1}. **${vuln.title}** (${vuln.severity})\n`;
+        response += `   ${vuln.description}\n`;
+        response += `   Location: Line ${vuln.codeContext.lineStart || "N/A"}\n\n`;
+      });
+
+      response += `You can click "Explain in chat" on any vulnerability card for a detailed explanation and fix.`;
+
+      return response;
+    }
+
+    return `I found ${auditResult.vulnerabilities.length} issue(s) in your contract. While none are critical or high-severity, it's still important to review them. Check the Vulnerabilities tab for details on each finding.`;
+  }
+
+  if (
+    lowerMessage.includes("reentrancy") ||
+    lowerMessage.includes("reentrant")
+  ) {
+    const reentrancyVuln = auditResult.vulnerabilities.find(
+      (v) => v.title.toLowerCase().includes("reentrancy")
+    );
+
+    if (reentrancyVuln) {
+      return `**Reentrancy Vulnerability Detected**
+
+${reentrancyVuln.description}
+
+**Why this is dangerous:** Reentrancy attacks allow an attacker to recursively call a function before the previous call completes. In your contract, this happens because external calls are made before state is updated. An attacker could drain funds by repeatedly calling the function before the balance is set to zero.
+
+**How to fix:** ${reentrancyVuln.suggestedFix}
+
+**Secure pattern example:**
+\`\`\`solidity
+function withdraw() public nonReentrant {
+    uint256 amount = balances[msg.sender];
+    require(amount > 0, "No balance");
+    
+    // Update state FIRST
+    balances[msg.sender] = 0;
+    
+    // Then make external call
+    (bool success, ) = msg.sender.call{value: amount}("");
+    require(success, "Transfer failed");
+}
+\`\`\`
+
+This follows the checks-effects-interactions pattern: validate, update state, then interact externally.`;
+    }
+
+    return `Reentrancy attacks occur when external calls are made before state updates. While I didn't detect a clear reentrancy pattern in your contract, always follow the checks-effects-interactions pattern: validate inputs, update state variables, then make external calls.`;
+  }
+
+  if (
+    lowerMessage.includes("code") ||
+    lowerMessage.includes("where") ||
+    lowerMessage.includes("line") ||
+    lowerMessage.includes("function")
+  ) {
+    const vulnsWithCode = auditResult.vulnerabilities.filter(
+      (v) => v.codeContext.snippet
+    );
+
+    if (vulnsWithCode.length > 0) {
+      let response = `Here are the code locations with issues:\n\n`;
+
+      vulnsWithCode.slice(0, 3).forEach((vuln) => {
+        response += `**${vuln.title}** (Line ${vuln.codeContext.lineStart}):\n`;
+        response += `\`\`\`solidity\n${vuln.codeContext.snippet}\n\`\`\`\n\n`;
+      });
+
+      if (vulnsWithCode.length > 3) {
+        response += `... and ${vulnsWithCode.length - 3} more. Check the Vulnerabilities tab for all code locations.`;
+      }
+
+      return response;
+    }
+
+    return `I can help you find specific code locations. Which vulnerability would you like to see the code for? You can also check the Vulnerabilities tab where each finding shows its code context.`;
+  }
+
+  // Default contextual response
+  return `Based on the audit, your contract has a **${auditResult.riskLevel}** risk level with **${auditResult.vulnerabilities.length}** finding(s).
+
+I can help you:
+- Understand why your contract is ${auditResult.riskLevel === "high" || auditResult.riskLevel === "critical" ? "risky" : "relatively secure"}
+- Explain specific vulnerabilities in detail
+- Show you how to fix each issue
+- Provide secure code patterns
+- Answer questions about smart contract security
+
+What would you like to know more about? Try asking:
+- "Why is this contract risky?"
+- "How can I fix the high severity issues?"
+- "Where is the reentrancy issue?"
+- Or click "Explain in chat" on any vulnerability card`;
+}
+
 export default function TamboChat({
   auditResult,
   originalCode,
@@ -25,6 +309,8 @@ export default function TamboChat({
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [currentSeedVuln, setCurrentSeedVuln] =
+    useState<Vulnerability | null>(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -32,24 +318,25 @@ export default function TamboChat({
 
   // Seed conversation with vulnerability when user clicks "Explain in chat"
   useEffect(() => {
-    if (seedVulnerability && auditResult) {
-      const seedMessage = `Explain this vulnerability: ${seedVulnerability.title}. Why is it dangerous and how can I fix it?`;
+    if (seedVulnerability && auditResult && !currentSeedVuln) {
+      setCurrentSeedVuln(seedVulnerability);
+      const seedMessage = `Explain the "${seedVulnerability.title}" vulnerability in this contract and how to fix it.`;
       setInput(seedMessage);
       // Auto-submit after a brief delay
       setTimeout(() => {
         const fakeEvent = {
           preventDefault: () => {},
         } as React.FormEvent;
-        handleSubmit(fakeEvent, seedMessage);
+        handleSubmit(fakeEvent, seedMessage, seedVulnerability);
         onVulnerabilitySeeded?.();
       }, 100);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [seedVulnerability]);
+  }, [seedVulnerability, auditResult, currentSeedVuln, onVulnerabilitySeeded]);
 
   const handleSubmit = async (
     e: React.FormEvent,
-    overrideMessage?: string
+    overrideMessage?: string,
+    overrideSeedVuln?: Vulnerability | null
   ) => {
     e.preventDefault();
     if (!auditResult) return;
@@ -57,6 +344,7 @@ export default function TamboChat({
     const userMessage = (overrideMessage || input.trim()).trim();
     if (!userMessage || isLoading) return;
 
+    const seedVuln = overrideSeedVuln || currentSeedVuln;
     setInput("");
     setIsLoading(true);
 
@@ -64,56 +352,27 @@ export default function TamboChat({
     setMessages((prev) => [...prev, { role: "user", content: userMessage }]);
 
     // Simulate AI response delay
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    await new Promise((resolve) => setTimeout(resolve, 1200));
 
-    // Generate contextual response based on audit results
-    let response = "";
-    const lowerMessage = userMessage.toLowerCase();
-
-    if (lowerMessage.includes("reentrancy")) {
-      const reentrancyVuln = auditResult.vulnerabilities.find(
-        (v) => v.title.toLowerCase().includes("reentrancy")
-      );
-      if (reentrancyVuln) {
-        response = `Reentrancy attacks are dangerous because they allow an attacker to recursively call a function before the previous call completes. This can drain funds from a contract.\n\n**Fix:** ${reentrancyVuln.suggestedFix}\n\n**Code location:** Line ${reentrancyVuln.codeContext.lineStart || "N/A"}`;
-      } else {
-        response =
-          "Reentrancy attacks occur when external calls are made before state updates. Use the ReentrancyGuard pattern from OpenZeppelin or follow the checks-effects-interactions pattern.";
-      }
-    } else if (lowerMessage.includes("fix") || lowerMessage.includes("how")) {
-      const firstVuln = auditResult.vulnerabilities[0];
-      if (firstVuln) {
-        response = `To fix **${firstVuln.title}**:\n\n${firstVuln.suggestedFix}\n\nThis is a ${firstVuln.severity}-severity issue that ${firstVuln.description}`;
-      } else {
-        response =
-          "Review the suggested fixes in the vulnerability cards above for detailed remediation steps.";
-      }
-    } else if (lowerMessage.includes("risk") || lowerMessage.includes("score")) {
-      response = `The risk score of **${auditResult.riskScore}/100** (${auditResult.riskLevel}) is calculated based on the number and severity of vulnerabilities found:\n\n- Critical issues: +30 points each\n- High issues: +20 points each\n- Medium issues: +10 points each\n- Low issues: +5 points each\n\nYour contract has ${auditResult.metrics.criticalCount} critical, ${auditResult.metrics.highCount} high, ${auditResult.metrics.mediumCount} medium, and ${auditResult.metrics.lowCount} low severity issues.`;
-    } else if (
-      lowerMessage.includes("vulnerability") ||
-      lowerMessage.includes("issue")
-    ) {
-      const criticalVulns = auditResult.vulnerabilities.filter(
-        (v) => v.severity === "critical" || v.severity === "high"
-      );
-      if (criticalVulns.length > 0) {
-        response = `I found **${auditResult.vulnerabilities.length}** potential vulnerability/vulnerabilities. The most critical ones are:\n\n${criticalVulns
-          .map((v, i) => `${i + 1}. **${v.title}** (${v.severity}) - ${v.description}`)
-          .join("\n\n")}\n\nCheck the vulnerability cards above for detailed fixes.`;
-      } else {
-        response = `I found ${auditResult.vulnerabilities.length} issue(s) in your contract. While none are critical, it's still important to address them before deployment.`;
-      }
-    } else if (lowerMessage.includes("explain") && seedVulnerability) {
-      response = `**${seedVulnerability.title}**\n\n${seedVulnerability.description}\n\n**Why it's dangerous:** This is a ${seedVulnerability.severity}-severity issue that could lead to ${seedVulnerability.severity === "critical" || seedVulnerability.severity === "high" ? "significant financial loss or contract compromise" : "potential security weaknesses"}.\n\n**How to fix:** ${seedVulnerability.suggestedFix}`;
-    } else {
-      response = `Based on the audit results, your contract has a **${auditResult.riskLevel}** risk level with **${auditResult.vulnerabilities.length}** issue(s) detected.\n\nI can help you:\n- Explain specific vulnerabilities in detail\n- Suggest fixes and best practices\n- Clarify the risk assessment\n- Provide code examples for secure patterns\n\nWhat would you like to know more about?`;
-    }
+    // Generate intelligent contextual response
+    const response = generateResponse(
+      userMessage,
+      auditResult,
+      originalCode,
+      seedVuln,
+      messages
+    );
 
     setMessages((prev) => [
       ...prev,
       { role: "assistant", content: response },
     ]);
+
+    // Clear seed vulnerability after first use
+    if (seedVuln) {
+      setCurrentSeedVuln(null);
+    }
+
     setIsLoading(false);
   };
 
@@ -126,8 +385,9 @@ export default function TamboChat({
   }
 
   const suggestionChips = [
-    "Why is this contract high risk?",
-    "How can I fix the reentrancy issues?",
+    "Why is this contract risky?",
+    "How can I fix the high severity issues?",
+    "Where are the vulnerabilities in the code?",
   ];
 
   return (
