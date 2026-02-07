@@ -477,7 +477,17 @@ export default function TamboChat({
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="Ask about vulnerabilities, fixes, or best practices..."
+            onKeyDown={(e) => {
+              // Ctrl+Enter or Cmd+Enter to submit
+              if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+                e.preventDefault();
+                const fakeEvent = {
+                  preventDefault: () => {},
+                } as React.FormEvent;
+                handleSubmit(fakeEvent);
+              }
+            }}
+            placeholder="Ask about vulnerabilities, fixes, or best practices... (Ctrl+Enter)"
             className="flex-1 rounded-xl border border-slate-800 bg-slate-900/80 px-4 py-2.5 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-400/60 focus:border-cyan-400/60 transition disabled:opacity-60 disabled:cursor-not-allowed"
             disabled={isLoading}
           />

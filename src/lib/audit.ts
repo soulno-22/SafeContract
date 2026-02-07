@@ -230,52 +230,60 @@ function detectVulnerabilities(code: string): Vulnerability[] {
     lineNum++;
   }
 
-  // Check for integer overflow/underflow (only for Solidity < 0.8.0)
-  // Solidity 0.8+ has built-in overflow checks, so skip this check
-  if (
-    !code.includes("pragma solidity ^0.8") &&
-    !code.includes("pragma solidity >=0.8")
-  ) {
+  // Check for integer overflow/underflow - ONLY for Solidity <0.8.0
+  const hasSolidity08Plus =
+    code.includes("pragma solidity ^0.8") ||
+    code.includes("pragma solidity >=0.8") ||
+    code.includes("pragma solidity >0.8");
+
+  if (!hasSolidity08Plus) {
+    // Only check if using older Solidity version
     let foundArithmetic = false;
     lineNum = 1;
     for (const line of lines) {
       const trimmed = line.trim();
 
-      // Skip comments and strings
+      // Skip comments and imports
       if (
         trimmed.startsWith("//") ||
-        trimmed.startsWith("*") ||
-        trimmed.startsWith("/*")
+        trimmed.startsWith("pragma") ||
+        trimmed.startsWith("import")
       ) {
         lineNum++;
         continue;
       }
 
-      // Only flag arithmetic in function bodies (heuristic: has { or ;)
+      // Only flag arithmetic in actual code (has { or ; or parentheses)
+      const hasArithmetic =
+        trimmed.includes("++") ||
+        trimmed.includes("+=") ||
+        trimmed.includes("-=") ||
+        (trimmed.includes("*") && trimmed.includes("="));
+
       if (
-        (trimmed.includes("++") ||
-          trimmed.includes("+=") ||
-          trimmed.includes("-=")) &&
+        hasArithmetic &&
         !trimmed.includes("SafeMath") &&
         !trimmed.includes("unchecked") &&
-        (trimmed.includes("{") ||
-          trimmed.includes(";") ||
-          trimmed.includes("("))
+        !foundArithmetic
       ) {
-        if (!foundArithmetic) {
+        // Check if this is actually a state variable operation
+        if (
+          trimmed.includes("=") &&
+          (trimmed.includes(";") || trimmed.includes("}"))
+        ) {
           vulnerabilities.push({
             id: `overflow-${vulnerabilities.length + 1}`,
             title: "Potential Integer Overflow/Underflow (Solidity <0.8.0)",
             severity: "low",
             description:
-              "Arithmetic operations detected in a contract using Solidity version <0.8.0. This Solidity version does not include built-in overflow protection.",
+              "Arithmetic operations detected. Solidity versions before 0.8.0 do not have built-in overflow protection.",
             codeContext: {
               lineStart: lineNum,
               lineEnd: lineNum,
               snippet: trimmed,
             },
             suggestedFix:
-              "Upgrade to Solidity 0.8.0+ which has built-in overflow checks. If you must use older versions, import SafeMath from OpenZeppelin.",
+              "Upgrade to Solidity 0.8.0+ for automatic overflow protection, or use OpenZeppelin's SafeMath library.",
           });
           foundArithmetic = true;
         }

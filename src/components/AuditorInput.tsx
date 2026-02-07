@@ -136,14 +136,12 @@ export default function AuditorInput({
             className="flex-1 inline-flex items-center justify-center gap-2 rounded-full px-5 py-2.5 text-sm font-medium text-slate-950 bg-cyan-400 hover:bg-cyan-300 transition-all duration-150 shadow-lg shadow-cyan-500/30 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {isLoading ? (
-              <>
-                <span className="animate-spin">⏳</span>
-                <span>Analyzing...</span>
-              </>
+              <span className="flex items-center gap-2">
+                <span className="inline-block w-4 h-4 border-2 border-slate-950 border-t-transparent rounded-full animate-spin"></span>
+                Analyzing...
+              </span>
             ) : (
-              <>
-                <span>Run AI audit</span>
-              </>
+              "Run AI audit"
             )}
           </button>
         </div>

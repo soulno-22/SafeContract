@@ -59,17 +59,20 @@ cd SafeContract
 npm install
 ```
 
-3. (Optional) Set up environment variables:
+3. Set up environment variables:
+
+Create a `.env.local` file in the root directory:
 
 ```bash
-cp .env.example .env
+OPENAI_API_KEY=your_openai_api_key_here
+NEXT_PUBLIC_APP_URL=http://localhost:3000
 ```
 
-Edit `.env` and add your Tambo AI API key (if using real Tambo integration):
+Get your OpenAI API key from: https://platform.openai.com/api-keys
 
-```
-NEXT_PUBLIC_TAMBO_API_KEY=your_actual_api_key_here
-```
+The app uses `gpt-4` by default. You can modify the model in `src/app/api/copilot/route.ts` if needed.
+
+**Note:** The `OPENAI_API_KEY` is required for the Copilot feature to work. Without it, the copilot will fall back to hardcoded responses.
 
 4. Run the development server:
 
