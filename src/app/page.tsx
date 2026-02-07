@@ -8,9 +8,9 @@ import { exampleContracts } from "@/lib/examples";
 import {
   RiskOverviewCard,
   VulnerabilityList,
-  RecommendationList,
   CodeContextViewer,
 } from "@/lib/tambo-components";
+import RecommendationsTab from "@/components/RecommendationsTab";
 import type { AuditRequest, AuditResult, Vulnerability } from "@/lib/schema";
 
 type TabType = "overview" | "vulnerabilities" | "recommendations" | "tambo";
@@ -294,10 +294,7 @@ export default function Home() {
                     )}
 
                     {activeTab === "recommendations" && (
-                      <RecommendationList
-                        auditResult={auditResult}
-                        originalCode={originalCode}
-                      />
+                      <RecommendationsTab auditResult={auditResult} />
                     )}
 
                     {activeTab === "tambo" && (

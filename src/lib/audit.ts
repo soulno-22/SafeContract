@@ -230,56 +230,88 @@ function detectVulnerabilities(code: string): Vulnerability[] {
     lineNum++;
   }
 
-  // Check for integer overflow/underflow
-  const arithmeticPattern = /(\+\+|\+\s*[0-9]|-\s*[0-9]|\*|\/)/g;
-  lineNum = 1;
-  for (const line of lines) {
-    if (
-      arithmeticPattern.test(line) &&
-      !line.includes("SafeMath") &&
-      !line.includes("unchecked")
-    ) {
-      vulnerabilities.push({
-        id: `overflow-${vulnerabilities.length + 1}`,
-        title: "Potential Integer Overflow/Underflow",
-        severity: "medium",
-        description:
-          "Arithmetic operations detected. Solidity 0.8+ includes built-in overflow checks; this issue is informational unless using older compiler versions.",
-        codeContext: {
-          lineStart: lineNum,
-          lineEnd: lineNum,
-          snippet: line.trim(),
-        },
-        suggestedFix:
-          "Use Solidity 0.8+ or import SafeMath from OpenZeppelin for older versions.",
-      });
-      break; // Only flag once
+  // Check for integer overflow/underflow (only for Solidity < 0.8.0)
+  // Solidity 0.8+ has built-in overflow checks, so skip this check
+  if (
+    !code.includes("pragma solidity ^0.8") &&
+    !code.includes("pragma solidity >=0.8")
+  ) {
+    let foundArithmetic = false;
+    lineNum = 1;
+    for (const line of lines) {
+      const trimmed = line.trim();
+
+      // Skip comments and strings
+      if (
+        trimmed.startsWith("//") ||
+        trimmed.startsWith("*") ||
+        trimmed.startsWith("/*")
+      ) {
+        lineNum++;
+        continue;
+      }
+
+      // Only flag arithmetic in function bodies (heuristic: has { or ;)
+      if (
+        (trimmed.includes("++") ||
+          trimmed.includes("+=") ||
+          trimmed.includes("-=")) &&
+        !trimmed.includes("SafeMath") &&
+        !trimmed.includes("unchecked") &&
+        (trimmed.includes("{") ||
+          trimmed.includes(";") ||
+          trimmed.includes("("))
+      ) {
+        if (!foundArithmetic) {
+          vulnerabilities.push({
+            id: `overflow-${vulnerabilities.length + 1}`,
+            title: "Potential Integer Overflow/Underflow (Solidity <0.8.0)",
+            severity: "low",
+            description:
+              "Arithmetic operations detected in a contract using Solidity version <0.8.0. This Solidity version does not include built-in overflow protection.",
+            codeContext: {
+              lineStart: lineNum,
+              lineEnd: lineNum,
+              snippet: trimmed,
+            },
+            suggestedFix:
+              "Upgrade to Solidity 0.8.0+ which has built-in overflow checks. If you must use older versions, import SafeMath from OpenZeppelin.",
+          });
+          foundArithmetic = true;
+        }
+      }
+      lineNum++;
     }
-    lineNum++;
   }
 
-  // Check for missing access controls
-  const payablePattern = /function\s+\w+\s*\([^)]*\)\s*public\s*payable/g;
-  lineNum = 1;
-  for (const line of lines) {
-    if (payablePattern.test(line) && !line.includes("onlyOwner")) {
+  // Check for missing access controls on payable functions
+  const payableFunctions = functions.filter(
+    (f) => f.payable && f.visibility === "public"
+  );
+
+  for (const func of payableFunctions) {
+    const hasAccessControl =
+      func.body.includes("onlyOwner") ||
+      func.body.includes("require(msg.sender") ||
+      func.body.includes("onlyRole") ||
+      func.body.includes("hasRole");
+
+    if (!hasAccessControl) {
       vulnerabilities.push({
         id: `access-${vulnerabilities.length + 1}`,
-        title: "Missing Access Control",
-        severity: "medium",
+        title: "Missing Access Control on Payable Function",
+        severity: "high",
         description:
-          "Public payable function detected without access control modifiers. Unauthorized users could call critical functions.",
+          `Public payable function "${func.name}" detected without access control modifiers. Unauthorized users could call this function and potentially drain funds or manipulate contract state.`,
         codeContext: {
-          lineStart: lineNum,
-          lineEnd: lineNum,
-          snippet: line.trim(),
+          lineStart: func.lineStart,
+          lineEnd: func.lineEnd,
+          snippet: func.body.split("\n").slice(0, 5).join("\n").trim(),
         },
         suggestedFix:
-          "Add access control modifiers (e.g., onlyOwner, onlyRole) to restrict function access.",
+          "Add access control modifiers (e.g., onlyOwner, onlyRole) to restrict function access. Consider using OpenZeppelin's Ownable or AccessControl contracts.",
       });
-      break;
     }
-    lineNum++;
   }
 
   // If no vulnerabilities found, add a low-severity informational note

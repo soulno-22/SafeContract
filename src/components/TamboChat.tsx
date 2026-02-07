@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { AuditResult, Vulnerability } from "@/lib/schema";
+import { callOpenAiForCopilot } from "@/lib/openai";
 
 interface TamboChatProps {
   auditResult: AuditResult | null;
@@ -351,22 +352,34 @@ export default function TamboChat({
     // Add user message to UI
     setMessages((prev) => [...prev, { role: "user", content: userMessage }]);
 
-    // Simulate AI response delay
-    await new Promise((resolve) => setTimeout(resolve, 1200));
+    try {
+      // Call OpenAI for real intelligent response
+      const response = await callOpenAiForCopilot({
+        systemPrompt: buildSystemMessage(seedVuln),
+        contextMessage: buildContextMessage(auditResult, originalCode, seedVuln),
+        userMessage: userMessage,
+        conversationHistory: messages,
+      });
 
-    // Generate intelligent contextual response
-    const response = generateResponse(
-      userMessage,
-      auditResult,
-      originalCode,
-      seedVuln,
-      messages
-    );
-
-    setMessages((prev) => [
-      ...prev,
-      { role: "assistant", content: response },
-    ]);
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: response },
+      ]);
+    } catch (error) {
+      console.error("Copilot error:", error);
+      // Fallback to generateResponse if OpenAI fails
+      const fallback = generateResponse(
+        userMessage,
+        auditResult,
+        originalCode,
+        seedVuln,
+        messages
+      );
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: fallback },
+      ]);
+    }
 
     // Clear seed vulnerability after first use
     if (seedVuln) {
