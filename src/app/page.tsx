@@ -121,7 +121,7 @@ export default function Home() {
               </h2>
 
               <p className="text-sm leading-relaxed text-slate-300 mb-6">
-                SafeContract uses Tambo's Generative UI to turn Solidity into an
+                SafeContract uses Tambo&apos;s Generative UI to turn Solidity into an
                 interactive risk dashboard, vulnerability cards, and an
                 explanation chat—just paste a contract or address and start
                 exploring.
@@ -205,7 +205,7 @@ export default function Home() {
             </p>
           </div>
           <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-4 text-sm text-slate-300">
-            <h3 className="font-semibold text-slate-100 mb-2">Who it's for</h3>
+            <h3 className="font-semibold text-slate-100 mb-2">Who it&apos;s for</h3>
             <p>
               Solidity devs, small teams, and students shipping contracts fast.
             </p>
