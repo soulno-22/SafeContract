@@ -430,7 +430,7 @@ export default function TamboChat({
       <div className="p-4 border-b border-slate-800 bg-slate-900/60">
         <h3 className="font-semibold text-slate-100">Tambo Copilot</h3>
         <p className="text-xs text-slate-400 mt-1">
-          Ask anything about this contract's security...
+          Ask anything about this contract&apos;s security...
         </p>
       </div>
 
