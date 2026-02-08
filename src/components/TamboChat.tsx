@@ -330,6 +330,10 @@ export default function TamboChat({
         } as React.FormEvent;
         handleSubmit(fakeEvent, seedMessage, seedVulnerability);
         onVulnerabilitySeeded?.();
+        // Clear input after submit to prevent confusion
+        setTimeout(() => {
+          setInput("");
+        }, 150);
       }, 100);
     }
   }, [seedVulnerability, auditResult, currentSeedVuln, onVulnerabilitySeeded]);
@@ -361,10 +365,19 @@ export default function TamboChat({
         conversationHistory: messages,
       });
 
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: response },
-      ]);
+      setMessages((prev) => {
+        // Prevent duplicate messages
+        const lastMessage = prev[prev.length - 1];
+        if (
+          lastMessage &&
+          lastMessage.role === "assistant" &&
+          lastMessage.content === response
+        ) {
+          console.warn("Duplicate message detected, skipping");
+          return prev;
+        }
+        return [...prev, { role: "assistant", content: response }];
+      });
     } catch (error) {
       console.error("Copilot error:", error);
       // Fallback to generateResponse if OpenAI fails
@@ -375,10 +388,19 @@ export default function TamboChat({
         seedVuln,
         messages
       );
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: fallback },
-      ]);
+      setMessages((prev) => {
+        // Prevent duplicate messages
+        const lastMessage = prev[prev.length - 1];
+        if (
+          lastMessage &&
+          lastMessage.role === "assistant" &&
+          lastMessage.content === fallback
+        ) {
+          console.warn("Duplicate message detected, skipping");
+          return prev;
+        }
+        return [...prev, { role: "assistant", content: fallback }];
+      });
     }
 
     // Clear seed vulnerability after first use

@@ -117,8 +117,8 @@ function detectVulnerabilities(code: string): Vulnerability[] {
   // Check for reentrancy: external call before state update
   for (const func of functions) {
     const funcLines = func.body.split("\n");
-    let externalCallLine: number | null = null;
-    let stateUpdateLine: number | null = null;
+    let externalCallLines: number[] = [];      // Track ALL external calls
+    let stateUpdateLines: number[] = [];       // Track ALL state updates
     let hasReentrancyGuard = false;
 
     // Check for ReentrancyGuard pattern
@@ -133,56 +133,86 @@ function detectVulnerabilities(code: string): Vulnerability[] {
       const line = funcLines[i];
       const trimmed = line.trim();
 
-      // Detect external calls
+      // Skip comments
       if (
-        /\.call\(|\.call\{|\.send\(|\.transfer\(|\.delegatecall\(/.test(trimmed)
+        trimmed.startsWith("//") ||
+        trimmed.startsWith("*") ||
+        trimmed.startsWith("/*")
       ) {
-        if (externalCallLine === null) {
-          externalCallLine = func.lineStart + i;
-        }
+        continue;
       }
 
-      // Detect state updates (simplified patterns)
+      // Detect external calls (improved regex)
       if (
-        /=\s*[^=]|mapping\[.*\]\s*\[.*\]\s*=|^\s*\+\+|^\s*--/.test(trimmed) &&
-        !trimmed.includes("memory") &&
-        !trimmed.includes("calldata")
+        /\.call\{|\.call\(|\.send\(|\.transfer\(|\.delegatecall\(|\.staticcall\(/.test(
+          trimmed
+        )
       ) {
-        if (stateUpdateLine === null) {
-          stateUpdateLine = func.lineStart + i;
-        }
+        externalCallLines.push(func.lineStart + i);
+      }
+
+      // Detect state updates (improved detection)
+      const isStateUpdate =
+        (trimmed.includes("=") &&
+          !trimmed.includes("==") &&
+          !trimmed.includes("!=") &&
+          !trimmed.includes("memory") &&
+          !trimmed.includes("calldata") &&
+          !trimmed.includes("if") &&
+          !trimmed.includes("require") &&
+          !trimmed.includes("assert")) ||
+        /balances\[.*\]\s*=|mapping\[.*\]\s*=|\+\+|\-\-/.test(trimmed);
+
+      if (isStateUpdate) {
+        stateUpdateLines.push(func.lineStart + i);
       }
     }
 
-    // If external call appears before state update, flag reentrancy
-    if (
-      externalCallLine !== null &&
-      stateUpdateLine !== null &&
-      externalCallLine < stateUpdateLine
-    ) {
-      const severity: VulnerabilitySeverity = hasReentrancyGuard
-        ? "medium"
-        : "high";
-      vulnerabilities.push({
-        id: `reentrancy-flow-${vulnerabilities.length + 1}`,
-        title: "Potential Reentrancy: External Call Before State Update",
-        severity,
-        description:
-          "This function makes external calls before updating state variables. This pattern can allow reentrancy attacks where an attacker recursively calls the function to drain funds before state is updated.",
-        codeContext: {
-          lineStart: externalCallLine,
-          lineEnd: stateUpdateLine,
-          snippet: funcLines
-            .slice(
-              externalCallLine - func.lineStart,
-              stateUpdateLine - func.lineStart + 1
-            )
-            .join("\n")
-            .trim(),
-        },
-        suggestedFix:
-          "Follow the checks-effects-interactions pattern: validate inputs, update state, then make external calls. Alternatively, use OpenZeppelin's ReentrancyGuard modifier.",
-      });
+    // Check if ANY external call comes before ANY state update
+    for (const callLine of externalCallLines) {
+      for (const updateLine of stateUpdateLines) {
+        if (callLine < updateLine) {
+          // Found reentrancy pattern: external call before state update
+          const severity: VulnerabilitySeverity = hasReentrancyGuard
+            ? "medium"
+            : "high";
+
+          // Only add if not already added (prevent duplicates)
+          const isDuplicate = vulnerabilities.some(
+            (v) =>
+              v.title.toLowerCase().includes("reentrancy") &&
+              v.codeContext.lineStart === callLine
+          );
+
+          if (!isDuplicate) {
+            vulnerabilities.push({
+              id: `reentrancy-flow-${vulnerabilities.length + 1}`,
+              title: "Reentrancy Vulnerability: External Call Before State Update",
+              severity,
+              description:
+                "This function makes external calls before updating state variables. This pattern allows reentrancy attacks where an attacker recursively calls the function to drain funds or manipulate state before the balance is updated. The vulnerable pattern: external call (line " +
+                callLine +
+                ") → state update (line " +
+                updateLine +
+                ").",
+              codeContext: {
+                lineStart: callLine,
+                lineEnd: updateLine,
+                snippet: funcLines
+                  .slice(
+                    callLine - func.lineStart,
+                    updateLine - func.lineStart + 1
+                  )
+                  .join("\n")
+                  .trim(),
+              },
+              suggestedFix:
+                "Follow the checks-effects-interactions pattern: (1) Validate inputs (checks), (2) Update state (effects) BEFORE external calls, (3) Then make external calls (interactions). Example:\n\n```solidity\nfunction withdraw(uint256 amount) public {\n  require(balances[msg.sender] >= amount, \"Insufficient balance\");\n  \n  // Update state FIRST\n  balances[msg.sender] -= amount;\n  \n  // Then make external call\n  (bool success, ) = msg.sender.call{value: amount}(\"\");\n  require(success, \"Transfer failed\");\n}\n```\n\nAlternatively, use OpenZeppelin's ReentrancyGuard: add `nonReentrant` modifier to the function.",
+            });
+          }
+          break; // Exit inner loop once vulnerability found for this function
+        }
+      }
     }
   }
 
@@ -292,33 +322,63 @@ function detectVulnerabilities(code: string): Vulnerability[] {
     }
   }
 
-  // Check for missing access controls on payable functions
-  const payableFunctions = functions.filter(
-    (f) => f.payable && f.visibility === "public"
-  );
+  // Check for missing access controls on payable/state-changing functions
+  const publicFunctions = functions.filter((f) => f.visibility === "public");
 
-  for (const func of payableFunctions) {
+  for (const func of publicFunctions) {
     const hasAccessControl =
       func.body.includes("onlyOwner") ||
-      func.body.includes("require(msg.sender") ||
       func.body.includes("onlyRole") ||
-      func.body.includes("hasRole");
+      func.body.includes("require(msg.sender") ||
+      func.body.includes("require(_msgSender()");
 
-    if (!hasAccessControl) {
-      vulnerabilities.push({
-        id: `access-${vulnerabilities.length + 1}`,
-        title: "Missing Access Control on Payable Function",
-        severity: "high",
-        description:
-          `Public payable function "${func.name}" detected without access control modifiers. Unauthorized users could call this function and potentially drain funds or manipulate contract state.`,
-        codeContext: {
-          lineStart: func.lineStart,
-          lineEnd: func.lineEnd,
-          snippet: func.body.split("\n").slice(0, 5).join("\n").trim(),
-        },
-        suggestedFix:
-          "Add access control modifiers (e.g., onlyOwner, onlyRole) to restrict function access. Consider using OpenZeppelin's Ownable or AccessControl contracts.",
-      });
+    const isPayable = func.payable;
+    const isStateChanging =
+      (func.body.includes("=") && !func.body.includes("memory")) ||
+      func.body.includes("transfer") ||
+      func.body.includes("mint") ||
+      func.body.includes("burn");
+
+    if (!hasAccessControl && (isPayable || isStateChanging)) {
+      // Determine severity based on function type
+      let severity: VulnerabilitySeverity = "medium";
+      let title = "Missing Access Control";
+
+      if (isPayable) {
+        severity = "high"; // Payable without access control is HIGH risk
+        title = "Missing Access Control on Payable Function";
+      }
+
+      // Check if already reported (prevent duplicates)
+      const isDuplicate = vulnerabilities.some(
+        (v) =>
+          v.title.includes("Missing Access Control") &&
+          v.codeContext.lineStart === func.lineStart
+      );
+
+      if (!isDuplicate) {
+        vulnerabilities.push({
+          id: `access-${vulnerabilities.length + 1}`,
+          title,
+          severity,
+          description: isPayable
+            ? `Public payable function "${func.name}" lacks access control. Anyone can call this function and send funds to it. An attacker could repeatedly call this to drain the contract or transfer unauthorized amounts.`
+            : `Public state-changing function "${func.name}" lacks access control. Unauthorized users could call this function and manipulate contract state.`,
+          codeContext: {
+            lineStart: func.lineStart,
+            lineEnd: func.lineStart,
+            snippet: func.body.split("\n").slice(0, 3).join("\n").trim(),
+          },
+          suggestedFix:
+            "Add access control modifiers to restrict function access:\n\n```solidity\n// Option 1: Owner-only\nfunction " +
+            func.name +
+            "(...) public onlyOwner { ... }\n\n// Option 2: Role-based\nfunction " +
+            func.name +
+            "(...) public onlyRole(ADMIN_ROLE) { ... }\n\n// Option 3: Manual check\nfunction " +
+            func.name +
+            "(...) public {\n  require(msg.sender == owner, \"Unauthorized\");\n  ...\n}\n```\n\nUse OpenZeppelin's Ownable or AccessControl contracts for best practices.",
+        });
+      }
     }
   }
 
@@ -408,11 +468,18 @@ function calculateRiskScore(vulnerabilities: Vulnerability[]): number {
 
 /**
  * Determine risk level from score
+ * Scoring: Critical +30, High +20, Medium +10, Low +5
+ * 
+ * Thresholds:
+ * - Critical: 3+ high issues (65+) or 1+ critical
+ * - High: 2+ high issues (40+) or 1+ high + 2+ medium
+ * - Medium: 1+ high OR 2+ medium (20+)
+ * - Low: Only low-severity findings
  */
 function getRiskLevel(score: number): "low" | "medium" | "high" | "critical" {
-  if (score >= 70) return "critical";
-  if (score >= 50) return "high";
-  if (score >= 25) return "medium";
+  if (score >= 65) return "critical";  // 3+ high severity issues
+  if (score >= 40) return "high";       // 2+ high severity issues OR 1+ high + 2+ medium
+  if (score >= 20) return "medium";     // 1+ high severity OR 2+ medium
   return "low";
 }
 
